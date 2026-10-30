@@ -1,4 +1,6 @@
+using System.Data;
 using System.Diagnostics;
+using System.Text;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Data.SqlClient;
 
@@ -27,6 +29,49 @@ public sealed class BookStore(IConfiguration config, IHttpContextAccessor http, 
 
     private readonly string _connectionString = config.GetConnectionString("Books")
         ?? throw new InvalidOperationException("Missing connection string 'Books'");
+
+    // Database-side latency injection: a server-side WAITFOR before the query, so the
+    // slow query is visible both on the SqlClient span and inside SQL Server itself
+    // (query samples, wait stats).
+    private readonly double _dbLatencyProbability = config.GetValue("DB_LATENCY_PROBABILITY", 0.03);
+    private readonly int _dbLatencyMinMs = config.GetValue("DB_LATENCY_MIN_MS", 500);
+    private readonly int _dbLatencyMaxMs = config.GetValue("DB_LATENCY_MAX_MS", 3000);
+
+    /// <summary>
+    /// Create a command that (1) stamps the session's CONTEXT_INFO with the current W3C
+    /// traceparent — the collector's sqlserver receiver parses it and puts the trace_id on
+    /// its query-sample logs — and (2) occasionally injects database latency.
+    /// </summary>
+    private SqlCommand CreateCommand(string sql, SqlConnection conn)
+    {
+        var cmd = new SqlCommand { Connection = conn };
+        var prefix = new StringBuilder();
+
+        if (Activity.Current is { IdFormat: ActivityIdFormat.W3C, Id: { } traceparent })
+        {
+            prefix.AppendLine("SET CONTEXT_INFO @traceparent;");
+            cmd.Parameters.Add("@traceparent", SqlDbType.VarBinary, 128).Value = Encoding.ASCII.GetBytes(traceparent);
+        }
+
+        if (Random.Shared.NextDouble() < _dbLatencyProbability)
+        {
+            var delayMs = Random.Shared.Next(_dbLatencyMinMs, _dbLatencyMaxMs + 1);
+            var tags = Telemetry.Tags(
+                ("http.route", CurrentRoute()),
+                ("http.method", http.HttpContext?.Request.Method),
+                ("latency.source", "database"));
+
+            logger.LogInformation("[Latency Injector] Delaying database query by {DelayMs} ms", delayMs);
+            Telemetry.LatencyInjectionCount.Add(1, tags);
+            Telemetry.LatencyInjectionDuration.Record(delayMs, tags);
+            prefix.AppendLine("WAITFOR DELAY @delay;");
+            cmd.Parameters.Add("@delay", SqlDbType.VarChar, 12).Value =
+                TimeSpan.FromMilliseconds(delayMs).ToString(@"hh\:mm\:ss\.fff");
+        }
+
+        cmd.CommandText = prefix.Append(sql).ToString();
+        return cmd;
+    }
 
     /// <summary>Open a connection, recording connection time as a metric.</summary>
     private async Task<SqlConnection> OpenAsync()
@@ -75,21 +120,21 @@ public sealed class BookStore(IConfiguration config, IHttpContextAccessor http, 
     public async Task PingAsync()
     {
         await using var conn = await OpenAsync();
-        await using var cmd = new SqlCommand("SELECT 1", conn);
+        await using var cmd = CreateCommand("SELECT 1", conn);
         await TimedAsync("health_check", () => cmd.ExecuteScalarAsync());
     }
 
     public async Task<List<Book>> ListAsync()
     {
         await using var conn = await OpenAsync();
-        await using var cmd = new SqlCommand($"SELECT {Columns} FROM dbo.Books ORDER BY id", conn);
+        await using var cmd = CreateCommand($"SELECT {Columns} FROM dbo.Books ORDER BY id", conn);
         return await TimedAsync("select", () => ReadBooksAsync(cmd));
     }
 
     public async Task<Book?> GetAsync(int id)
     {
         await using var conn = await OpenAsync();
-        await using var cmd = new SqlCommand($"SELECT {Columns} FROM dbo.Books WHERE id = @id", conn);
+        await using var cmd = CreateCommand($"SELECT {Columns} FROM dbo.Books WHERE id = @id", conn);
         cmd.Parameters.AddWithValue("@id", id);
         return (await TimedAsync("select", () => ReadBooksAsync(cmd))).SingleOrDefault();
     }
@@ -97,7 +142,7 @@ public sealed class BookStore(IConfiguration config, IHttpContextAccessor http, 
     public async Task<Book> CreateAsync(string title, string author, string isbn, string description, decimal price)
     {
         await using var conn = await OpenAsync();
-        await using var cmd = new SqlCommand(
+        await using var cmd = CreateCommand(
             $"""
             INSERT INTO dbo.Books (title, author, isbn, description, price)
             OUTPUT {Prefixed("INSERTED")}
@@ -116,7 +161,7 @@ public sealed class BookStore(IConfiguration config, IHttpContextAccessor http, 
     {
         var setClause = string.Join(", ", fields.Keys.Select(f => $"{f} = @{f}"));
         await using var conn = await OpenAsync();
-        await using var cmd = new SqlCommand(
+        await using var cmd = CreateCommand(
             $"""
             UPDATE dbo.Books
             SET {setClause}, updated_at = SYSUTCDATETIME()
@@ -132,7 +177,7 @@ public sealed class BookStore(IConfiguration config, IHttpContextAccessor http, 
     public async Task<bool> DeleteAsync(int id)
     {
         await using var conn = await OpenAsync();
-        await using var cmd = new SqlCommand("DELETE FROM dbo.Books OUTPUT DELETED.id WHERE id = @id", conn);
+        await using var cmd = CreateCommand("DELETE FROM dbo.Books OUTPUT DELETED.id WHERE id = @id", conn);
         cmd.Parameters.AddWithValue("@id", id);
         return await TimedAsync("delete", () => cmd.ExecuteScalarAsync()) is not null;
     }

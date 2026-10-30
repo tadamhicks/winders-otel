@@ -24,7 +24,11 @@ loadgen (Task Scheduler) ──HTTP──▶ IIS 127.0.0.1:8080 ──▶ ASP.NE
 | PUT | `/books/{id}` | Partial update. Returns 400 if no fields are given and 409 if the ISBN already exists. |
 | DELETE | `/books/{id}` | |
 
-**Latency injection:** `LATENCY_PROBABILITY` (default `0.05`) and `LATENCY_MAX_MS` (default `1300`) control it. Set them as app pool environment variables or in `appsettings.json`.
+**Latency injection** comes in two kinds. Set the settings below as app pool environment variables or in `appsettings.json`.
+- **HTTP:** before the handler runs, matching the reference app. Settings: `LATENCY_PROBABILITY` (default `0.05`) and `LATENCY_MAX_MS` (default `1300`).
+- **Database:** a server-side `WAITFOR DELAY` before the SQL runs, so the slow query is also visible inside SQL Server. Settings: `DB_LATENCY_PROBABILITY` (default `0.03`), `DB_LATENCY_MIN_MS` (default `500`) and `DB_LATENCY_MAX_MS` (default `3000`).
+
+Both kinds record `app.latency_injection.*` with a `latency.source` label set to `http` or `database`.
 
 ## Instrumentation (hybrid)
 
@@ -51,6 +55,21 @@ Per-app OTel settings are set as environment variables on the `books-dotnet` IIS
 - `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`
 - and the others listed in that script.
 
+## Infrastructure telemetry and correlation
+
+The collector also scrapes **IIS** (the `iis` receiver) and **SQL Server** (the `sqlserver` receiver, which uses perf counters plus a direct connection). See `deploy/otelcol-app-pipelines.yaml`. These are tied to the app in the following ways:
+
+| Link | How |
+|---|---|
+| Common labels | All app, IIS and SQL telemetry carries `env_name=win`, `deployment.environment.name=win`, `service.namespace=books` and `host.name`. |
+| IIS → app | IIS metrics for the `books-dotnet` site or app pool get `service.name=books-dotnet`. Server-wide IIS metrics get `service.name=iis`. |
+| SQL Server → trace | Every app command first runs `SET CONTEXT_INFO <traceparent>`. The `sqlserver` receiver parses `CONTEXT_INFO` as a W3C traceparent, so its `db.server.query_sample` logs carry the request's `trace_id` and `span_id`. A slow query seen inside SQL Server, with its wait type and blocking session, links straight to the trace, the SqlClient span and the app logs. |
+| Metrics → trace | `OTEL_METRICS_EXEMPLAR_FILTER=trace_based` attaches trace-ID exemplars to the app's histograms. |
+
+Query samples only capture statements that are running at scrape time (every 10 s). Fast queries rarely show up; injected database latency makes them show up regularly.
+
+The receiver logs in as the collector's service account (`NT AUTHORITY\SYSTEM`, Windows auth, no password) over TCP `127.0.0.1:1433`. See `deploy/configure-sql-monitoring.ps1`. The collector's own monitoring queries are filtered out of the SQL Server logs.
+
 ## Setup from scratch
 
 Run these as an administrator on Windows Server.
@@ -70,7 +89,9 @@ winget install --id Microsoft.SQLServer.2025.Express -e    # may "fail", but the
 # 3. OTel .NET agent for IIS
 #    Use the module from the release; Install-OpenTelemetryCore, then Register-OpenTelemetryForIIS.
 
-# 4. Collector: merge deploy/otelcol-app-pipelines.yaml into the collector's config.yaml, then validate and restart.
+# 4. Collector: enable SQL loopback TCP and the collector login, then merge
+#    deploy/otelcol-app-pipelines.yaml into the collector's config.yaml, validate and restart.
+.\deploy\configure-sql-monitoring.ps1
 
 # 5. App + DB
 .\deploy\deploy-iis.ps1

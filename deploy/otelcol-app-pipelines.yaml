@@ -1,8 +1,8 @@
 # Additions merged into the running collector config at
 #   C:\Program Files (x86)\OpenTelemetry Collector\config.yaml
-# (original backed up as config.yaml.bak-20261030). Not a standalone config —
-# the otlphttp/groundcover exporter and memory_limiter/batch processors already
-# exist there. Kept here (without the API key) so the change is tracked.
+# (backups: config.yaml.bak-20261030 = original, config.yaml.bak-20261030-2 = before IIS/SQL).
+# Not a standalone config — the otlphttp/groundcover exporter and memory_limiter/batch
+# processors already exist there. Kept here (without the API key) so changes are tracked.
 
 receivers:
   # OTLP from local apps (books-dotnet in IIS via the .NET zero-code agent).
@@ -13,6 +13,50 @@ receivers:
         endpoint: 127.0.0.1:4317
       http:
         endpoint: 127.0.0.1:4318
+
+  # IIS performance counters (per site / app pool).
+  iis:
+    collection_interval: 30s
+
+  # SQL Server: perf counters + direct connection (Windows auth as LocalSystem,
+  # loopback TCP only — see deploy/configure-sql-monitoring.ps1). Query samples parse
+  # each session's CONTEXT_INFO as a W3C traceparent, so samples from books-dotnet
+  # carry the request's trace_id.
+  sqlserver:
+    collection_interval: 10s
+    # Named instance: perf counters live under MSSQL$SQLEXPRESS:* (needs both).
+    computer_name: ${env:COMPUTERNAME}
+    instance_name: SQLEXPRESS
+    resource_attributes:
+      sqlserver.instance.name:
+        enabled: true
+    datasource: "sqlserver://127.0.0.1:1433?database=master&encrypt=disable&app+name=otelcol-sqlserver"
+    metrics:
+      sqlserver.database.io:
+        enabled: true
+      sqlserver.database.latency:
+        enabled: true
+      sqlserver.database.operations:
+        enabled: true
+      sqlserver.processes.blocked:
+        enabled: true
+      sqlserver.os.wait.duration:
+        enabled: true
+      sqlserver.memory.usage:
+        enabled: true
+      sqlserver.deadlock.rate:
+        enabled: true
+    events:
+      db.server.query_sample:
+        enabled: true
+      db.server.top_query:
+        enabled: true
+    query_sample_collection:
+      max_rows_per_query: 100
+    top_query_collection:
+      lookback_time: 60s
+      collection_interval: 60s
+      top_query_count: 50
 
 processors:
   # Like resource/common, but keeps the app's own service.name
@@ -29,8 +73,69 @@ processors:
         value: ${env:COMPUTERNAME}
         action: insert
 
+  # Shared context for the books stack's infrastructure (IIS, SQL Server); the app
+  # sets the same service.namespace / deployment.environment.name itself.
+  resource/infra:
+    attributes:
+      - key: env_name
+        value: "win"
+        action: upsert
+      - key: deployment.environment.name
+        value: "win"
+        action: upsert
+      - key: service.namespace
+        value: "books"
+        action: upsert
+      - key: host
+        value: ${env:COMPUTERNAME}
+        action: upsert
+      - key: host.name
+        value: ${env:COMPUTERNAME}
+        action: insert
+
+  resource/iis:
+    attributes:
+      - key: service.name
+        value: "iis"
+        action: upsert
+
+  resource/sqlserver:
+    attributes:
+      - key: service.name
+        value: "sqlserver"
+        action: upsert
+
+  # IIS metrics for the books-dotnet site/app pool belong to the app's service.
+  transform/iis_app:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - set(attributes["service.name"], "books-dotnet") where attributes["iis.site"] == "books-dotnet"
+          - set(attributes["service.name"], "books-dotnet") where attributes["iis.application_pool"] == "books-dotnet"
+
+  # Drop samples/top-queries of the collector's own monitoring queries: it logs in as
+  # LocalSystem, and its queries all read system DMVs / @@SERVERNAME (the app's never do).
+  filter/sqlserver_self:
+    error_mode: ignore
+    logs:
+      log_record:
+        - 'attributes["user.name"] == "NT AUTHORITY\\SYSTEM"'
+        - 'IsMatch(attributes["db.query.text"], "sys\\s*\\.\\s*(dm_|master_files)|@@SERVERNAME")'
+
+  # Query-sample / top-query events have no body or severity; give them both.
+  transform/sqlserver_logs:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(severity_number, SEVERITY_NUMBER_INFO)
+          - set(severity_text, "INFO")
+          - 'set(body, Concat([event_name, attributes["db.query.text"]], ": ")) where attributes["db.query.text"] != nil'
+
 service:
   pipelines:
+    # --- App telemetry over OTLP (books-dotnet) ---
     traces/app:
       receivers: [otlp]
       processors: [memory_limiter, resource/app, batch]
@@ -44,4 +149,20 @@ service:
     logs/app:
       receivers: [otlp]
       processors: [memory_limiter, resource/app, batch]
+      exporters: [otlphttp/groundcover]
+
+    # --- Infrastructure behind books-dotnet ---
+    metrics/iis:
+      receivers: [iis]
+      processors: [memory_limiter, resource/infra, resource/iis, transform/iis_app, batch]
+      exporters: [otlphttp/groundcover]
+
+    metrics/sqlserver:
+      receivers: [sqlserver]
+      processors: [memory_limiter, resource/infra, resource/sqlserver, batch]
+      exporters: [otlphttp/groundcover]
+
+    logs/sqlserver:
+      receivers: [sqlserver]
+      processors: [memory_limiter, filter/sqlserver_self, resource/infra, resource/sqlserver, transform/sqlserver_logs, batch]
       exporters: [otlphttp/groundcover]

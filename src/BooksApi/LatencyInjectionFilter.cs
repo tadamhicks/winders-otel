@@ -18,7 +18,7 @@ public sealed class LatencyInjectionFilter(IConfiguration config, ILogger<Latenc
             var http = context.HttpContext;
             var delayMs = Random.Shared.Next(100, _maxMs + 1);
             var route = (http.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText ?? http.Request.Path.Value;
-            var tags = Telemetry.Tags(("http.route", route), ("http.method", http.Request.Method));
+            var tags = Telemetry.Tags(("http.route", route), ("http.method", http.Request.Method), ("latency.source", "http"));
 
             logger.LogInformation("[Latency Injector] Delaying request by {DelayMs} ms", delayMs);
             Telemetry.LatencyInjectionCount.Add(1, tags);
