@@ -15,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $AsSystem) {
     $log = "$env:ProgramData\books-dotnet\sql-install.log"
     New-Item -ItemType Directory -Force (Split-Path $log) | Out-Null
-    $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -AsSystem -Media `"$Media`" -SysAdmin `"$SysAdmin`" -MaxServerMemoryMB $MaxServerMemoryMB *> `"$log`""
+    $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -AsSystem -Media `"$Media`" -SysAdmin `"$SysAdmin`" -MaxServerMemoryMB $MaxServerMemoryMB"
     $task = 'books-dotnet-sql-install'
     Register-ScheduledTask -TaskName $task -Force -User 'SYSTEM' -RunLevel Highest `
         -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg) | Out-Null
@@ -28,6 +28,7 @@ if (-not $AsSystem) {
     return
 }
 
+Start-Transcript -Path "$env:ProgramData\books-dotnet\sql-install.log" -Force | Out-Null
 & "$Media\setup.exe" /Q /ACTION=Install /FEATURES=SQLENGINE /INSTANCENAME=SQLEXPRESS `
     /IACCEPTSQLSERVERLICENSETERMS /UPDATEENABLED=0 `
     /SQLSVCACCOUNT="NT Service\MSSQL`$SQLEXPRESS" /SQLSVCSTARTUPTYPE=Automatic `

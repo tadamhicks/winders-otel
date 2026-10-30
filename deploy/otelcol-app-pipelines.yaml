@@ -1,0 +1,47 @@
+# Additions merged into the running collector config at
+#   C:\Program Files (x86)\OpenTelemetry Collector\config.yaml
+# (original backed up as config.yaml.bak-20261030). Not a standalone config —
+# the otlphttp/groundcover exporter and memory_limiter/batch processors already
+# exist there. Kept here (without the API key) so the change is tracked.
+
+receivers:
+  # OTLP from local apps (books-dotnet in IIS via the .NET zero-code agent).
+  # Loopback only — nothing off-box should send here.
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  # Like resource/common, but keeps the app's own service.name
+  # (resource/common upserts service.name=windows-host).
+  resource/app:
+    attributes:
+      - key: env_name
+        value: "win"
+        action: upsert
+      - key: host
+        value: ${env:COMPUTERNAME}
+        action: upsert
+      - key: host.name
+        value: ${env:COMPUTERNAME}
+        action: insert
+
+service:
+  pipelines:
+    traces/app:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/app, batch]
+      exporters: [otlphttp/groundcover]
+
+    metrics/app:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/app, batch]
+      exporters: [otlphttp/groundcover]
+
+    logs/app:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/app, batch]
+      exporters: [otlphttp/groundcover]
