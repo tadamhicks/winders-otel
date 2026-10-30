@@ -11,13 +11,18 @@ param(
 )
 $ErrorActionPreference = 'Continue'
 
+# Works on Windows PowerShell 5.1 (what the SYSTEM scheduled task uses) and 7.x.
 function Call([string]$Method, [string]$Path, $Body) {
-    $req = @{ Method = $Method; Uri = "$BaseUrl$Path"; UseBasicParsing = $true; TimeoutSec = 30; SkipHttpErrorCheck = $true }
+    $req = @{ Method = $Method; Uri = "$BaseUrl$Path"; UseBasicParsing = $true; TimeoutSec = 30 }
     if ($null -ne $Body) { $req.Body = ($Body | ConvertTo-Json -Compress); $req.ContentType = 'application/json' }
-    try {
-        $r = Invoke-WebRequest @req
-        if ($r.Content) { $r.Content | ConvertFrom-Json -ErrorAction SilentlyContinue } else { $null }
-    } catch { Write-Warning "$Method $Path failed: $($_.Exception.Message)" }
+    try { $content = (Invoke-WebRequest @req).Content }
+    catch {
+        # 4xx/5xx responses are expected (deliberate errors); only report transport failures.
+        if (-not $_.Exception.Response) { Write-Warning "$Method $Path failed: $($_.Exception.Message)" }
+        return
+    }
+    # ForEach-Object unrolls JSON arrays, which 5.1's ConvertFrom-Json emits as a single object.
+    if ($content) { $content | ConvertFrom-Json | ForEach-Object { $_ } }
 }
 
 function NewIsbn { '979-' + (Get-Random -Minimum 1000000000 -Maximum 9999999999) }
