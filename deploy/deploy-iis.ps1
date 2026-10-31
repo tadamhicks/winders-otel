@@ -26,8 +26,9 @@ if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
 # App-pool environmentVariables are set when w3wp starts, before the agent initialises.
 $otelEnv = [ordered]@{
     OTEL_SERVICE_NAME                               = $Name
-    # service.namespace groups the app with its IIS and SQL Server telemetry (see otelcol config)
-    OTEL_RESOURCE_ATTRIBUTES                        = 'service.version=2.0.0,service.namespace=books,deployment.environment.name=win'
+    # deployment.environment.name matches the IIS / SQL Server telemetry (see otelcol config).
+    # No service.namespace: groundcover would map it to a k8s-style namespace.
+    OTEL_RESOURCE_ATTRIBUTES                        = 'service.version=2.0.0,deployment.environment.name=win'
     OTEL_METRICS_EXEMPLAR_FILTER                    = 'trace_based'             # trace_id exemplars on metrics
     OTEL_EXPORTER_OTLP_ENDPOINT                     = 'http://127.0.0.1:4318'   # collector listens on IPv4 loopback only
     OTEL_EXPORTER_OTLP_PROTOCOL                     = 'http/protobuf'

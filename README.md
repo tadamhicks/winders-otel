@@ -61,7 +61,7 @@ The collector also scrapes **IIS** (the `iis` receiver) and **SQL Server** (the 
 
 | Link | How |
 |---|---|
-| Common labels | All app, IIS and SQL telemetry carries `env_name=win`, `deployment.environment.name=win`, `service.namespace=books` and `host.name`. |
+| Common labels | All app, IIS and SQL telemetry carries `env_name=win`, `deployment.environment.name=win` and `host.name`. No `service.namespace` is set, because groundcover would treat it as a Kubernetes namespace. |
 | IIS → app | IIS metrics for the `books-dotnet` site or app pool get `service.name=books-dotnet`. Server-wide IIS metrics get `service.name=iis`. |
 | SQL Server → trace | Every app command first runs `SET CONTEXT_INFO <traceparent>`. The `sqlserver` receiver parses `CONTEXT_INFO` as a W3C traceparent, so its `db.server.query_sample` logs carry the request's `trace_id` and `span_id`. A slow query seen inside SQL Server, with its wait type and blocking session, links straight to the trace, the SqlClient span and the app logs. |
 | Metrics → trace | `OTEL_METRICS_EXEMPLAR_FILTER=trace_based` attaches trace-ID exemplars to the app's histograms. |
