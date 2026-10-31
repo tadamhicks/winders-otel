@@ -1,6 +1,7 @@
 # Additions merged into the running collector config at
 #   C:\Program Files (x86)\OpenTelemetry Collector\config.yaml
-# (backups: config.yaml.bak-20261030 = original, config.yaml.bak-20261030-2 = before IIS/SQL).
+# (backups: config.yaml.bak-20261030 = original, config.yaml.bak-20261030-2 = before IIS/SQL,
+#  config.yaml.bak-20261031 = before resource/namespace).
 # Not a standalone config — the otlphttp/groundcover exporter and memory_limiter/batch
 # processors already exist there. Kept here (without the API key) so changes are tracked.
 
@@ -93,6 +94,15 @@ processors:
         value: ${env:COMPUTERNAME}
         action: insert
 
+  # groundcover keys a non-k8s workload by (workload, namespace, env). Traces get
+  # namespace from service.namespace, metrics don't, so the workload page's metric
+  # queries (filtered on namespace) miss them. Copy it across for metrics.
+  resource/namespace:
+    attributes:
+      - key: namespace
+        from_attribute: service.namespace
+        action: insert
+
   resource/iis:
     attributes:
       - key: service.name
@@ -143,7 +153,7 @@ service:
 
     metrics/app:
       receivers: [otlp]
-      processors: [memory_limiter, resource/app, batch]
+      processors: [memory_limiter, resource/app, resource/namespace, batch]
       exporters: [otlphttp/groundcover]
 
     logs/app:
@@ -154,12 +164,12 @@ service:
     # --- Infrastructure behind books-dotnet ---
     metrics/iis:
       receivers: [iis]
-      processors: [memory_limiter, resource/infra, resource/iis, transform/iis_app, batch]
+      processors: [memory_limiter, resource/infra, resource/namespace, resource/iis, transform/iis_app, batch]
       exporters: [otlphttp/groundcover]
 
     metrics/sqlserver:
       receivers: [sqlserver]
-      processors: [memory_limiter, resource/infra, resource/sqlserver, batch]
+      processors: [memory_limiter, resource/infra, resource/namespace, resource/sqlserver, batch]
       exporters: [otlphttp/groundcover]
 
     logs/sqlserver:
