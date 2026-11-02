@@ -95,8 +95,11 @@ processors:
   # books-dotnet SqlClient spans (see README "Deviations from semantic conventions"):
   #  - strip the SET CONTEXT_INFO prefix the app adds for SQL Server correlation, so
   #    db.query.text shows the app's statement (the prefix is plumbing, not the query);
-  #  - add legacy db.system / net.peer.name beside the stable db.system.name /
-  #    server.address: groundcover derives protocol_type and the DB peer from the legacy keys.
+  #  - add legacy db.system=mssql beside the stable db.system.name: groundcover derives
+  #    protocol_type from the legacy key;
+  #  - peer-service mapping: calls to this host's SQL Server get service.peer.name (and the
+  #    deprecated peer.service) = the sqlserver receiver's service.name, so the span's peer
+  #    is the same "sqlserver" entity groundcover shows in Workloads.
   transform/sqlclient_spans:
     error_mode: ignore
     trace_statements:
@@ -104,7 +107,8 @@ processors:
         statements:
           - 'replace_pattern(attributes["db.query.text"], "^SET CONTEXT_INFO @traceparent;\\s*", "") where attributes["db.query.text"] != nil'
           - set(attributes["db.system"], "mssql") where attributes["db.system.name"] == "microsoft.sql_server"
-          - set(attributes["net.peer.name"], attributes["server.address"]) where attributes["db.system.name"] == "microsoft.sql_server" and attributes["server.address"] != nil
+          - set(attributes["service.peer.name"], "sqlserver") where attributes["db.system.name"] == "microsoft.sql_server" and attributes["server.address"] == "${env:COMPUTERNAME}"
+          - set(attributes["peer.service"], "sqlserver") where attributes["db.system.name"] == "microsoft.sql_server" and attributes["server.address"] == "${env:COMPUTERNAME}"
 
   resource/iis:
     attributes:

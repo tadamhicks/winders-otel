@@ -74,23 +74,21 @@ The receiver logs in as the collector's service account (`NT AUTHORITY\SYSTEM`, 
 
 The SqlClient instrumentation (agent v1.17.0) emits only the **stable** database semantic conventions: `db.system.name=microsoft.sql_server`, `server.address`, `db.namespace`, `db.query.text` and `db.query.summary`. Its `OTEL_SEMCONV_STABILITY_OPT_IN=database/dup` option, which emitted the old attributes alongside the new ones, was removed in 1.14.
 
-The Python reference app's psycopg2 instrumentation still emits the **legacy** ones (`db.system`, `net.peer.name`, `db.name`). groundcover reads the legacy keys:
-- It derives a span's database type (`protocol_type`) from `db.system`.
-- It derives the database peer (`partner_workload`, the edge from app to database) from `net.peer.name`.
+The Python reference app's psycopg2 instrumentation still emits the **legacy** ones (`db.system`, `net.peer.name`, `db.name`). groundcover derives a span's database type (`protocol_type`) from the legacy `db.system`. Without it, books-dotnet's SQL spans showed no database type.
 
-Without them, books-dotnet's SQL spans showed no database type and no database peer.
+`transform/sqlclient_spans` in the collector changes these SqlClient spans:
 
-`transform/sqlclient_spans` in the collector changes these SqlClient spans in three ways:
+| Change | Convention status | Why |
+|---|---|---|
+| Adds `db.system=mssql` when `db.system.name=microsoft.sql_server` | **Deviation**: a deprecated attribute, added next to the stable one | groundcover then classifies the span as `mssql`. |
+| Removes the leading `SET CONTEXT_INFO @traceparent;` from `db.query.text` | **Deviation** | The app adds this line to every command so SQL Server telemetry can be tied to traces (see above). It isn't part of the app's query. Strictly, `db.query.text` should be the full text sent to the server, so this attribute no longer matches the wire exactly. An injected `WAITFOR DELAY` stays visible because it really is part of the query. |
+| Sets `service.peer.name=sqlserver`, plus the deprecated `peer.service`, on calls to this host's SQL Server | **Follows the convention**: a peer-service mapping | Both attributes are defined as the remote service's `service.name`. `sqlserver` is the `service.name` the `sqlserver` receiver reports, so groundcover's `server` field on the span names the same entity it lists under Workloads. This is the collector-side equivalent of the Java agent's `peer-service-mapping`. |
 
-| Change | Why |
-|---|---|
-| Adds `db.system=mssql` (the legacy value) when `db.system.name=microsoft.sql_server` | groundcover then classifies the span as `mssql`. The stable attribute is kept. |
-| Adds `net.peer.name` with the same value as `server.address` | groundcover then shows the SQL Server as the span's peer. The stable attribute is kept. |
-| Removes the leading `SET CONTEXT_INFO @traceparent;` from `db.query.text` | The app adds this line to every command so SQL Server telemetry can be tied to traces (see above). It isn't part of the app's query. **Strictly, `db.query.text` should be the full text sent to the server**, so this attribute no longer matches the wire exactly. An injected `WAITFOR DELAY` stays visible because it really is part of the query. |
+`server.address` is left as SqlClient reports it: the host from the connection string. `deploy-iis.ps1` sets the connection string to `Server=<COMPUTERNAME>\SQLEXPRESS` rather than `.`, which still uses shared memory. The peer-service mapping matches on that host name.
 
-The connection string also uses the host name (`Server=<COMPUTERNAME>\SQLEXPRESS`, set by `deploy-iis.ps1`) rather than `.`. That's not a deviation, but SqlClient reports the data source host as `server.address`, and `.` gave a meaningless peer. The host name matches `host.name` on the `sqlserver` receiver's telemetry, and the connection still uses shared memory.
+**Not done:** groundcover also fills `partner_workload` from the legacy `net.peer.name`. The only way to get `sqlserver` there would be `net.peer.name=sqlserver`, which puts a service name in a hostname attribute. The OTel-instrumented services elsewhere in this workspace (for example frontend → cart) link through `server` with an empty `partner_workload`, so this deployment does the same.
 
-If groundcover starts reading the stable keys, remove the two added attributes.
+If groundcover starts reading `db.system.name`, remove the added `db.system`.
 
 ## Setup from scratch
 
