@@ -70,6 +70,28 @@ Query samples only capture statements that are running at scrape time (every 10 
 
 The receiver logs in as the collector's service account (`NT AUTHORITY\SYSTEM`, Windows auth, no password) over TCP `127.0.0.1:1433`. See `deploy/configure-sql-monitoring.ps1`. The collector's own monitoring queries are filtered out of the SQL Server logs.
 
+## Deviations from semantic conventions
+
+The SqlClient instrumentation (agent v1.17.0) emits only the **stable** database semantic conventions: `db.system.name=microsoft.sql_server`, `server.address`, `db.namespace`, `db.query.text` and `db.query.summary`. Its `OTEL_SEMCONV_STABILITY_OPT_IN=database/dup` option, which emitted the old attributes alongside the new ones, was removed in 1.14.
+
+The Python reference app's psycopg2 instrumentation still emits the **legacy** ones (`db.system`, `net.peer.name`, `db.name`). groundcover reads the legacy keys:
+- It derives a span's database type (`protocol_type`) from `db.system`.
+- It derives the database peer (`partner_workload`, the edge from app to database) from `net.peer.name`.
+
+Without them, books-dotnet's SQL spans showed no database type and no database peer.
+
+`transform/sqlclient_spans` in the collector changes these SqlClient spans in three ways:
+
+| Change | Why |
+|---|---|
+| Adds `db.system=mssql` (the legacy value) when `db.system.name=microsoft.sql_server` | groundcover then classifies the span as `mssql`. The stable attribute is kept. |
+| Adds `net.peer.name` with the same value as `server.address` | groundcover then shows the SQL Server as the span's peer. The stable attribute is kept. |
+| Removes the leading `SET CONTEXT_INFO @traceparent;` from `db.query.text` | The app adds this line to every command so SQL Server telemetry can be tied to traces (see above). It isn't part of the app's query. **Strictly, `db.query.text` should be the full text sent to the server**, so this attribute no longer matches the wire exactly. An injected `WAITFOR DELAY` stays visible because it really is part of the query. |
+
+The connection string also uses the host name (`Server=<COMPUTERNAME>\SQLEXPRESS`, set by `deploy-iis.ps1`) rather than `.`. That's not a deviation, but SqlClient reports the data source host as `server.address`, and `.` gave a meaningless peer. The host name matches `host.name` on the `sqlserver` receiver's telemetry, and the connection still uses shared memory.
+
+If groundcover starts reading the stable keys, remove the two added attributes.
+
 ## Setup from scratch
 
 Run these as an administrator on Windows Server.

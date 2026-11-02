@@ -2,7 +2,7 @@
 #   C:\Program Files (x86)\OpenTelemetry Collector\config.yaml
 # (backups: config.yaml.bak-20261030 = original, config.yaml.bak-20261030-2 = before IIS/SQL,
 #  config.yaml.bak-20261031 = before resource/namespace, config.yaml.bak-20261031-2 = before
-#  dropping namespace entirely).
+#  dropping namespace entirely, config.yaml.bak-20261102 = before transform/sqlclient_spans).
 # Not a standalone config — the otlphttp/groundcover exporter and memory_limiter/batch
 # processors already exist there. Kept here (without the API key) so changes are tracked.
 
@@ -92,6 +92,20 @@ processors:
         value: ${env:COMPUTERNAME}
         action: insert
 
+  # books-dotnet SqlClient spans (see README "Deviations from semantic conventions"):
+  #  - strip the SET CONTEXT_INFO prefix the app adds for SQL Server correlation, so
+  #    db.query.text shows the app's statement (the prefix is plumbing, not the query);
+  #  - add legacy db.system / net.peer.name beside the stable db.system.name /
+  #    server.address: groundcover derives protocol_type and the DB peer from the legacy keys.
+  transform/sqlclient_spans:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - 'replace_pattern(attributes["db.query.text"], "^SET CONTEXT_INFO @traceparent;\\s*", "") where attributes["db.query.text"] != nil'
+          - set(attributes["db.system"], "mssql") where attributes["db.system.name"] == "microsoft.sql_server"
+          - set(attributes["net.peer.name"], attributes["server.address"]) where attributes["db.system.name"] == "microsoft.sql_server" and attributes["server.address"] != nil
+
   resource/iis:
     attributes:
       - key: service.name
@@ -137,7 +151,7 @@ service:
     # --- App telemetry over OTLP (books-dotnet) ---
     traces/app:
       receivers: [otlp]
-      processors: [memory_limiter, resource/app, batch]
+      processors: [memory_limiter, resource/app, transform/sqlclient_spans, batch]
       exporters: [otlphttp/groundcover]
 
     metrics/app:

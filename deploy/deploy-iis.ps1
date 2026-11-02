@@ -21,7 +21,7 @@ if ((& $appcmd list apppool $Name /text:state) -eq 'Started') { AppCmd stop appp
 & "$env:ProgramFiles\dotnet\dotnet.exe" publish "$repo\src\BooksApi" -c Release -o $PhysicalPath --nologo
 if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed' }
 
-# --- OpenTelemetry settings for this pool only ---
+# --- OpenTelemetry settings (and the connection string) for this pool only ---
 # Profiler/startup-hook variables come from Register-OpenTelemetryForIIS (WAS/W3SVC).
 # App-pool environmentVariables are set when w3wp starts, before the agent initialises.
 $otelEnv = [ordered]@{
@@ -34,6 +34,9 @@ $otelEnv = [ordered]@{
     OTEL_EXPORTER_OTLP_PROTOCOL                     = 'http/protobuf'
     OTEL_DOTNET_AUTO_METRICS_ADDITIONAL_SOURCES     = $Name                     # the app's custom Meter
     OTEL_DOTNET_AUTO_LOGS_INCLUDE_FORMATTED_MESSAGE = 'true'
+    # Host name rather than '.': SqlClient spans report it as server.address (matching
+    # host.name on the sqlserver receiver's telemetry). Still uses shared memory locally.
+    ConnectionStrings__Books                        = "Server=$env:COMPUTERNAME\SQLEXPRESS;Database=BooksDb;Integrated Security=true;TrustServerCertificate=true;Application Name=books-dotnet"
 }
 $section = 'system.applicationHost/applicationPools'
 foreach ($key in $otelEnv.Keys) {
