@@ -3,7 +3,8 @@
 # (backups: config.yaml.bak-20261030 = original, config.yaml.bak-20261030-2 = before IIS/SQL,
 #  config.yaml.bak-20261031 = before resource/namespace, config.yaml.bak-20261031-2 = before
 #  dropping namespace entirely, config.yaml.bak-20261102 = before transform/sqlclient_spans,
-#  config.yaml.bak-20261105 = before the second (demo) exporter).
+#  config.yaml.bak-20261105 = before the second (demo) exporter,
+#  config.yaml.bak-20261105-2 = demo with env production, before switching it to env win).
 # Not a standalone config — the otlphttp/groundcover exporter, memory_limiter/batch
 # processors and the host pipelines (metrics/host, metrics/self, logs) already exist there.
 # Kept here (without API keys) so changes are tracked.
@@ -152,20 +153,10 @@ processors:
           - set(severity_text, "INFO")
           - 'set(body, Concat([event_name, attributes["db.query.text"]], ": ")) where attributes["db.query.text"] != nil'
 
-  # Everything sent to the groundcover "demo" workspace is labelled production there.
-  # Applied only in the */demo pipelines, so the experiments workspace keeps env "win".
-  resource/groundcover_demo:
-    attributes:
-      - key: env_name
-        value: "production"
-        action: upsert
-      - key: deployment.environment.name
-        value: "production"
-        action: upsert
-
 exporters:
-  # Second destination: groundcover "demo" workspace. The live config has the real
-  # ingestion key in place of <demo-ingestion-key>.
+  # Second destination: groundcover "demo" workspace, same data and labels (env win) as
+  # experiments. Every pipeline, including the host ones (metrics/host, metrics/self, logs),
+  # exports to both. The live config has the real key in place of <demo-ingestion-key>.
   otlphttp/groundcover_demo:
     endpoint: https://demo.platform.grcv.io
     headers:
@@ -188,78 +179,30 @@ service:
     traces/app:
       receivers: [otlp]
       processors: [memory_limiter, resource/app, transform/sqlclient_spans, batch]
-      exporters: [otlphttp/groundcover]
+      exporters: [otlphttp/groundcover, otlphttp/groundcover_demo]
 
     metrics/app:
       receivers: [otlp]
       processors: [memory_limiter, resource/app, batch]
-      exporters: [otlphttp/groundcover]
+      exporters: [otlphttp/groundcover, otlphttp/groundcover_demo]
 
     logs/app:
       receivers: [otlp]
       processors: [memory_limiter, resource/app, batch]
-      exporters: [otlphttp/groundcover]
+      exporters: [otlphttp/groundcover, otlphttp/groundcover_demo]
 
     # --- Infrastructure behind books-dotnet ---
     metrics/iis:
       receivers: [iis]
       processors: [memory_limiter, resource/infra, resource/iis, transform/iis_app, batch]
-      exporters: [otlphttp/groundcover]
+      exporters: [otlphttp/groundcover, otlphttp/groundcover_demo]
 
     metrics/sqlserver:
       receivers: [sqlserver]
       processors: [memory_limiter, resource/infra, resource/sqlserver, batch]
-      exporters: [otlphttp/groundcover]
+      exporters: [otlphttp/groundcover, otlphttp/groundcover_demo]
 
     logs/sqlserver:
       receivers: [sqlserver]
       processors: [memory_limiter, filter/sqlserver_self, resource/infra, resource/sqlserver, transform/sqlserver_logs, batch]
-      exporters: [otlphttp/groundcover]
-
-    # --- Copies of every pipeline for the groundcover "demo" workspace ---
-    # Same receivers (fanned out) and processors, plus resource/groundcover_demo
-    # (env production). Separate pipelines so the env relabel doesn't reach experiments.
-    metrics/host_demo:
-      receivers: [hostmetrics/system, windowsperfcounters/cpu, windowsperfcounters/memory, windowsperfcounters/disk]
-      processors: [memory_limiter, resource/common, resource/groundcover_demo, batch]
-      exporters: [otlphttp/groundcover_demo]
-
-    metrics/self_demo:
-      receivers: [prometheus/self]
-      processors: [memory_limiter, resource/self, resource/groundcover_demo, batch]
-      exporters: [otlphttp/groundcover_demo]
-
-    logs/demo:
-      receivers: [windowseventlog/system, windowseventlog/application]
-      processors: [memory_limiter, filter/drop_self_logs, resource/common, transform/windows_logs, resource/groundcover_demo, batch]
-      exporters: [otlphttp/groundcover_demo]
-
-    traces/app_demo:
-      receivers: [otlp]
-      processors: [memory_limiter, resource/app, transform/sqlclient_spans, resource/groundcover_demo, batch]
-      exporters: [otlphttp/groundcover_demo]
-
-    metrics/app_demo:
-      receivers: [otlp]
-      processors: [memory_limiter, resource/app, resource/groundcover_demo, batch]
-      exporters: [otlphttp/groundcover_demo]
-
-    logs/app_demo:
-      receivers: [otlp]
-      processors: [memory_limiter, resource/app, resource/groundcover_demo, batch]
-      exporters: [otlphttp/groundcover_demo]
-
-    metrics/iis_demo:
-      receivers: [iis]
-      processors: [memory_limiter, resource/infra, resource/iis, transform/iis_app, resource/groundcover_demo, batch]
-      exporters: [otlphttp/groundcover_demo]
-
-    metrics/sqlserver_demo:
-      receivers: [sqlserver]
-      processors: [memory_limiter, resource/infra, resource/sqlserver, resource/groundcover_demo, batch]
-      exporters: [otlphttp/groundcover_demo]
-
-    logs/sqlserver_demo:
-      receivers: [sqlserver]
-      processors: [memory_limiter, filter/sqlserver_self, resource/infra, resource/sqlserver, transform/sqlserver_logs, resource/groundcover_demo, batch]
-      exporters: [otlphttp/groundcover_demo]
+      exporters: [otlphttp/groundcover, otlphttp/groundcover_demo]
